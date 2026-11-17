@@ -1,0 +1,95 @@
+name: Sync upstream mautrix-teams stable releases
+
+on:
+  schedule:
+    - cron: "29 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream-mautrix-teams
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check latest upstream stable release and rebase build files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          latest_tag="$(gh api repos/YourSandwich/mautrix-teams/releases/latest --jq '.tag_name')"
+          current_tag="$(tr -d '[:space:]' < .custom-upstream-tag)"
+          echo "Current upstream base: ${current_tag}; latest upstream release: ${latest_tag}"
+
+          if [[ "${latest_tag}" == "${current_tag}" ]]; then
+            echo "Already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch https://github.com/YourSandwich/mautrix-teams.git \
+            "refs/tags/${current_tag}:refs/tags/${current_tag}" \
+            "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
+
+          git checkout -B docker-next "${latest_tag}"
+          patches="$(git rev-list --reverse "${current_tag}..origin/docker" -- . \
+            ':!.custom-upstream-tag' \
+            ':!Dockerfile.custom' \
+            ':!.github/workflows/custom-release.yml' \
+            ':!.github/workflows/sync-upstream.yml')"
+          if [[ -n "${patches}" ]]; then
+            if ! git cherry-pick --empty=drop ${patches}; then
+              status="$(git status --short || true)"
+              git cherry-pick --abort || true
+              title="Upstream sync conflict for ${latest_tag}"
+              existing="$(gh issue list -R "${GITHUB_REPOSITORY}" --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+              body="$(printf 'Automatic rebase onto upstream `%s` hit a merge conflict.\n\n```\n%s\n```\n' "${latest_tag}" "${status}")"
+              if [[ -n "${existing}" ]]; then
+                gh issue comment -R "${GITHUB_REPOSITORY}" "${existing}" --body "${body}"
+              else
+                gh issue create -R "${GITHUB_REPOSITORY}" --title "${title}" --body "${body}"
+              fi
+              exit 1
+            fi
+          fi
+
+          git checkout origin/docker -- \
+            Dockerfile.custom \
+            .github/workflows/custom-release.yml \
+            .github/workflows/sync-upstream.yml
+          printf '%s\n' "${latest_tag}" > .custom-upstream-tag
+          git add \
+            .custom-upstream-tag \
+            Dockerfile.custom \
+            .github/workflows/custom-release.yml \
+            .github/workflows/sync-upstream.yml
+          git commit -m "ci: rebase container build onto ${latest_tag}"
+
+          base_ver="${latest_tag#v}"
+          if [[ "$base_ver" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            base_ver="${base_ver}.0"
+          fi
+          max_n=0
+          while IFS= read -r tag; do
+            n="${tag##*-custom.}"
+            if [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_n )); then
+              max_n="$n"
+            fi
+          done < <(git tag -l "${base_ver}-custom.*")
+          release_tag="${base_ver}-custom.$((max_n + 1))"
+
+          git push origin "refs/tags/${latest_tag}"
+          git push origin HEAD:docker --force-with-lease
+          gh workflow run -R "${GITHUB_REPOSITORY}" custom-release.yml --ref docker -f "release_tag=${release_tag}"
