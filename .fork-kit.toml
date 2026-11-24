@@ -1,0 +1,15 @@
+# fork-kit (https://github.com/BierDav/fork-kit) keeps this fork merged with
+# upstream's latest release through one sync pull request.
+# The fork carries no source patches, only its container build.
+
+[upstream]
+url = "https://github.com/YourSandwich/mautrix-teams.git"
+track = "release"
+
+[fork]
+branch = "docker"
+
+[[patch]]
+id = "container-build"
+summary = "Multi-architecture container image published to ghcr.io/bierdav/mautrix-teams"
+paths = ["Dockerfile.custom", ".github/workflows/custom-release.yml", ".github/workflows/fork-kit.yml"]

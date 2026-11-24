@@ -3,6 +3,10 @@ name: Build and release mautrix-teams
 on:
   push:
     branches: [docker]
+  # Build and smoke-test (never publish) on pull requests into docker,
+  # including fork-kit's sync PR.
+  pull_request:
+    branches: [docker]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -15,8 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   prepare:
@@ -36,7 +39,9 @@ jobs:
           owner_lc="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           echo "image_repo=ghcr.io/${owner_lc}/mautrix-teams" >> "$GITHUB_OUTPUT"
 
-          upstream_tag="$(tr -d '[:space:]' < .custom-upstream-tag)"
+          # The newest upstream release merged into this branch.
+          git fetch --quiet --no-tags https://github.com/YourSandwich/mautrix-teams.git '+refs/tags/v*:refs/tags/v*'
+          upstream_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD)"
           echo "upstream_tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
 
           if [[ -n "${{ inputs.release_tag }}" ]]; then
@@ -61,6 +66,9 @@ jobs:
     needs: prepare
     name: Build & smoke-test (${{ matrix.suffix }})
     runs-on: ${{ matrix.runs_on }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -73,6 +81,8 @@ jobs:
             suffix: arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -94,6 +104,7 @@ jobs:
             'command -v sleep >/dev/null && command -v su-exec >/dev/null && command -v ffmpeg >/dev/null && /usr/bin/mautrix-teams --help >/dev/null'
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -101,6 +112,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push image by digest
+        if: github.event_name != 'pull_request'
         id: push
         uses: docker/build-push-action@v6
         with:
@@ -112,12 +124,14 @@ jobs:
           cache-from: type=gha,scope=teams-${{ matrix.suffix }}
 
       - name: Export digest
+        if: github.event_name != 'pull_request'
         run: |
           mkdir -p "${{ runner.temp }}/digests"
           digest="${{ steps.push.outputs.digest }}"
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ matrix.suffix }}
@@ -126,8 +140,12 @@ jobs:
           retention-days: 1
 
   publish:
+    if: github.event_name != 'pull_request'
     needs: [prepare, build]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
