@@ -1,6 +1,8 @@
 # fork-kit (https://github.com/BierDav/fork-kit) keeps this fork merged with
 # upstream's latest release through one sync pull request.
 # The fork carries no source patches, only its container build.
+# The sync runs centrally (BierDav/fork-kit, sync-forks.yml); this repository
+# holds no App key and runs only the guard (.github/workflows/fork-kit.yml).
 
 [upstream]
 url = "https://github.com/YourSandwich/mautrix-teams.git"
